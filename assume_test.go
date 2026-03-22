@@ -146,6 +146,21 @@ func TestDefaultSessionName_Unique(t *testing.T) {
 	}
 }
 
+func TestAssumeRole_InvalidPolicy(t *testing.T) {
+	// Policy validation is local — no AWS call should be made.
+	_, err := assumeRole(context.Background(), "us-east-1",
+		"arn:aws:iam::123456789012:role/test-role",
+		"test-session", 3600,
+		`not-valid-json`,
+	)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON policy, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid JSON") {
+		t.Errorf("error should mention invalid JSON, got: %v", err)
+	}
+}
+
 func TestRun_DryRun(t *testing.T) {
 	cfg := runConfig{
 		roleArn:  "arn:aws:iam::123456789012:role/test-role",

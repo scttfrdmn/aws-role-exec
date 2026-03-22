@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/user"
@@ -95,6 +96,9 @@ func assumeRole(ctx context.Context, region, roleArn, sessionName string, durati
 		DurationSeconds: aws.Int32(durationSecs),
 	}
 	if policy != "" {
+		if !json.Valid([]byte(policy)) {
+			return nil, fmt.Errorf("--policy: invalid JSON")
+		}
 		input.Policy = aws.String(policy)
 	}
 
@@ -169,7 +173,9 @@ func defaultSessionName() string {
 	// correlating or pre-computing CloudTrail session names.
 	b := make([]byte, 4)
 	if _, err := rand.Read(b); err != nil {
-		// Fallback to PID if crypto/rand is unavailable (should never happen).
+		// crypto/rand should never fail on any supported platform. If it does,
+		// warn loudly so the operator knows session names are predictable.
+		fmt.Fprintf(os.Stderr, "warning: crypto/rand unavailable, session name will use predictable PID: %v\n", err)
 		return fmt.Sprintf("%s-%d", name, os.Getpid())
 	}
 	return fmt.Sprintf("%s-%s", name, hex.EncodeToString(b))
