@@ -1,0 +1,22 @@
+# Binaries
+aws-role-exec
+aws-role-exec.exe
+dist/
+
+# Test artifacts
+coverage.txt
+coverage.html
+*.test
+
+# Go workspace
+go.work
+go.work.sum
+
+# macOS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo

@@ -1,0 +1,162 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/user"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
+)
+
+type credentials struct {
+	AccessKeyID     string
+	SecretAccessKey string
+	SessionToken    string
+	Expiration      time.Time
+	Region          string
+}
+
+type runConfig struct {
+	roleArn     string
+	duration    string
+	sessionName string
+	region      string
+	format      string
+	output      string
+	policy      string
+	dryRun      bool
+	command     []string
+}
+
+func run(ctx context.Context, cfg runConfig) error {
+	secs, err := parseDuration(cfg.duration)
+	if err != nil {
+		return fmt.Errorf("--duration: %w", err)
+	}
+
+	sessionName := cfg.sessionName
+	if sessionName == "" {
+		sessionName = defaultSessionName()
+	}
+
+	region := cfg.region
+	if region == "" {
+		region = os.Getenv("AWS_DEFAULT_REGION")
+	}
+	if region == "" {
+		region = os.Getenv("AWS_REGION")
+	}
+	if region == "" {
+		region = "us-east-1"
+	}
+
+	if cfg.dryRun {
+		fmt.Fprintf(os.Stderr, "dry-run: would assume role %s\n", cfg.roleArn)
+		fmt.Fprintf(os.Stderr, "  session-name : %s\n", sessionName)
+		fmt.Fprintf(os.Stderr, "  duration     : %ds\n", secs)
+		fmt.Fprintf(os.Stderr, "  region       : %s\n", region)
+		if len(cfg.command) > 0 {
+			fmt.Fprintf(os.Stderr, "  command      : %v\n", cfg.command)
+		} else {
+			fmt.Fprintf(os.Stderr, "  format       : %s\n", cfg.format)
+		}
+		return nil
+	}
+
+	creds, err := assumeRole(ctx, region, cfg.roleArn, sessionName, secs, cfg.policy)
+	if err != nil {
+		return err
+	}
+	creds.Region = region
+
+	if len(cfg.command) > 0 {
+		return execWithCreds(creds, cfg.command)
+	}
+	return printCreds(creds, cfg.format, cfg.output)
+}
+
+func assumeRole(ctx context.Context, region, roleArn, sessionName string, durationSecs int32, policy string) (*credentials, error) {
+	awsCfg, err := config.LoadDefaultConfig(ctx, config.WithRegion(region))
+	if err != nil {
+		return nil, fmt.Errorf("load AWS config: %w", err)
+	}
+
+	input := &sts.AssumeRoleInput{
+		RoleArn:         aws.String(roleArn),
+		RoleSessionName: aws.String(sessionName),
+		DurationSeconds: aws.Int32(durationSecs),
+	}
+	if policy != "" {
+		input.Policy = aws.String(policy)
+	}
+
+	client := sts.NewFromConfig(awsCfg)
+	out, err := client.AssumeRole(ctx, input)
+	if err != nil {
+		return nil, fmt.Errorf("sts AssumeRole: %w", err)
+	}
+
+	return &credentials{
+		AccessKeyID:     aws.ToString(out.Credentials.AccessKeyId),
+		SecretAccessKey: aws.ToString(out.Credentials.SecretAccessKey),
+		SessionToken:    aws.ToString(out.Credentials.SessionToken),
+		Expiration:      aws.ToTime(out.Credentials.Expiration),
+	}, nil
+}
+
+// parseDuration accepts Go durations ("1h30m") or HH:MM:SS (for HPC walltime compatibility).
+// Returns seconds. Enforces 15m <= duration <= 12h.
+func parseDuration(s string) (int32, error) {
+	var d time.Duration
+
+	if strings.Count(s, ":") == 2 {
+		// HH:MM:SS
+		parts := strings.Split(s, ":")
+		h, err1 := strconv.Atoi(parts[0])
+		m, err2 := strconv.Atoi(parts[1])
+		sec, err3 := strconv.Atoi(parts[2])
+		if err1 != nil || err2 != nil || err3 != nil {
+			return 0, fmt.Errorf("invalid HH:MM:SS format %q", s)
+		}
+		d = time.Duration(h)*time.Hour + time.Duration(m)*time.Minute + time.Duration(sec)*time.Second
+	} else {
+		var err error
+		d, err = time.ParseDuration(s)
+		if err != nil {
+			return 0, fmt.Errorf("invalid duration %q (use Go duration like 1h30m or HH:MM:SS)", s)
+		}
+	}
+
+	const minDuration = 15 * time.Minute
+	const maxDuration = 12 * time.Hour
+
+	if d < minDuration {
+		return 0, fmt.Errorf("duration %v is below the 15-minute minimum", d)
+	}
+	if d > maxDuration {
+		return 0, fmt.Errorf("duration %v exceeds the 12-hour maximum", d)
+	}
+
+	return int32(d.Seconds()), nil
+}
+
+func defaultSessionName() string {
+	name := "aws-role-exec"
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		// sanitize: STS session names allow [a-zA-Z0-9=,.@-]
+		safe := strings.Map(func(r rune) rune {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+				return r
+			}
+			return '-'
+		}, u.Username)
+		name = "aws-role-exec-" + safe
+	}
+	return fmt.Sprintf("%s-%d", name, os.Getpid())
+}
