@@ -24,9 +24,10 @@ checksum:
   name_template: "checksums.txt"
 signs:
   - cmd: cosign
+    signature: "${artifact}.bundle"
     args:
       - sign-blob
-      - "--bundle=${artifact}.bundle"
+      - "--bundle=${signature}"
       - "${artifact}"
       - --yes
     artifacts: checksum
