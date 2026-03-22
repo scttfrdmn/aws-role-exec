@@ -10,7 +10,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
@@ -26,7 +26,7 @@ jobs:
       - name: Integration Tests
         run: go test -race -tags integration -coverprofile=coverage-integration.txt ./...
       - name: Upload coverage
-        uses: codecov/codecov-action@ad3126e916f78f00edff4a0b0a8b6c8e80199af3 # v5.4.2
+        uses: codecov/codecov-action@4481f553995cc5011b158ce191746ac1a1d0f815 # v5.5.3
         with:
           files: coverage.txt,coverage-integration.txt
         continue-on-error: true
