@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/user"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -37,15 +38,53 @@ type runConfig struct {
 	command     []string
 }
 
+// roleARNRe matches IAM role ARNs across all AWS partitions
+// (aws, aws-cn, aws-us-gov, aws-iso, aws-iso-b).
+var roleARNRe = regexp.MustCompile(`^arn:[a-z][a-z0-9-]*:iam::[0-9]{12}:role/[\w+=,.@/-]+$`)
+
+// validateRoleARN returns an error if arn does not look like a valid IAM role ARN.
+func validateRoleARN(arn string) error {
+	if !roleARNRe.MatchString(arn) {
+		return fmt.Errorf("--role-arn: invalid IAM role ARN %q (expected arn:PARTITION:iam::ACCOUNT_ID:role/ROLE_NAME)", arn)
+	}
+	return nil
+}
+
+// validateSessionName returns an error if name contains characters outside the
+// STS-allowed set [a-zA-Z0-9=,.@-] or exceeds the 64-character maximum.
+func validateSessionName(name string) error {
+	const maxLen = 64
+	if len(name) > maxLen {
+		return fmt.Errorf("--session-name: exceeds %d-character limit (%d chars)", maxLen, len(name))
+	}
+	for _, c := range name {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+			c == '=' || c == ',' || c == '.' || c == '@' || c == '-') {
+			return fmt.Errorf("--session-name: invalid character %q (allowed: [a-zA-Z0-9=,.@-])", c)
+		}
+	}
+	return nil
+}
+
 func run(ctx context.Context, cfg runConfig) error {
 	secs, err := parseDuration(cfg.duration)
 	if err != nil {
 		return fmt.Errorf("--duration: %w", err)
 	}
 
+	if err := validateRoleARN(cfg.roleArn); err != nil {
+		return err
+	}
+
 	sessionName := cfg.sessionName
 	if sessionName == "" {
 		sessionName = defaultSessionName()
+	}
+	// Validate user-supplied session names; generated names are already safe.
+	if cfg.sessionName != "" {
+		if err := validateSessionName(cfg.sessionName); err != nil {
+			return err
+		}
 	}
 
 	region := cfg.region
@@ -81,6 +120,16 @@ func run(ctx context.Context, cfg runConfig) error {
 	if len(cfg.command) > 0 {
 		return execWithCreds(creds, cfg.command)
 	}
+
+	// Guard against a cancelled context before writing the output file.
+	// Without this, a cancellation after AssumeRole succeeds could create an
+	// O_EXCL-locked file that blocks retries without any credentials inside.
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("context cancelled before writing credentials: %w", ctx.Err())
+	default:
+	}
+
 	return printCreds(creds, cfg.format, cfg.output)
 }
 
@@ -96,6 +145,11 @@ func assumeRole(ctx context.Context, region, roleArn, sessionName string, durati
 		DurationSeconds: aws.Int32(durationSecs),
 	}
 	if policy != "" {
+		// AWS limits inline session policies to 2,048 characters.
+		const maxPolicyLen = 2048
+		if len(policy) > maxPolicyLen {
+			return nil, fmt.Errorf("--policy: exceeds %d-character AWS limit (%d chars)", maxPolicyLen, len(policy))
+		}
 		if !json.Valid([]byte(policy)) {
 			return nil, fmt.Errorf("--policy: invalid JSON")
 		}

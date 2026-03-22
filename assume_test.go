@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseDuration(t *testing.T) {
@@ -169,5 +170,134 @@ func TestRun_DryRun(t *testing.T) {
 	}
 	if err := run(context.Background(), cfg); err != nil {
 		t.Fatalf("run with dry-run: %v", err)
+	}
+}
+
+func TestValidateRoleARN(t *testing.T) {
+	tests := []struct {
+		arn     string
+		wantErr bool
+	}{
+		{"arn:aws:iam::123456789012:role/MyRole", false},
+		{"arn:aws-cn:iam::123456789012:role/MyRole", false},
+		{"arn:aws-us-gov:iam::123456789012:role/MyRole", false},
+		{"arn:aws-iso:iam::123456789012:role/MyRole", false},
+		{"arn:aws-iso-b:iam::123456789012:role/MyRole", false},
+		{"arn:aws:iam::123456789012:role/path/to/MyRole", false},
+		{"arn:aws:iam::123456789012:role/My.Role@Example", false},
+		// invalid cases
+		{"", true},
+		{"not-an-arn", true},
+		{"arn:aws:iam::12345:role/MyRole", true},            // account ID too short
+		{"arn:aws:iam::1234567890123:role/MyRole", true},    // account ID too long
+		{"arn:aws:iam::123456789012:user/MyUser", true},     // not a role
+		{"arn:AWS:iam::123456789012:role/MyRole", true},     // uppercase partition
+		{"arn:aws:iam:us-east-1:123456789012:role/R", true}, // region in IAM ARN
+	}
+	for _, tt := range tests {
+		t.Run(tt.arn, func(t *testing.T) {
+			err := validateRoleARN(tt.arn)
+			if tt.wantErr && err == nil {
+				t.Errorf("validateRoleARN(%q) expected error, got nil", tt.arn)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("validateRoleARN(%q) unexpected error: %v", tt.arn, err)
+			}
+		})
+	}
+}
+
+func TestValidateSessionName(t *testing.T) {
+	tests := []struct {
+		name    string
+		wantErr bool
+	}{
+		{"ValidName", false},
+		{"valid-name-123", false},
+		{"name@example.com", false},
+		{"name=value,key.other", false},
+		{strings.Repeat("a", 64), false}, // exactly at limit
+		{strings.Repeat("a", 65), true},  // over limit
+		{"invalid name", true},           // space
+		{"invalid/name", true},           // slash
+		{"invalid\x00name", true},        // null byte
+		{"invalid:name", true},           // colon
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateSessionName(tt.name)
+			if tt.wantErr && err == nil {
+				t.Errorf("validateSessionName(%q) expected error, got nil", tt.name)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("validateSessionName(%q) unexpected error: %v", tt.name, err)
+			}
+		})
+	}
+}
+
+func TestAssumeRole_PolicyTooLong(t *testing.T) {
+	// Policy size check is local — no AWS call should be made.
+	bigPolicy := `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}` +
+		strings.Repeat(" ", 2048)
+	_, err := assumeRole(context.Background(), "us-east-1",
+		"arn:aws:iam::123456789012:role/test-role",
+		"test-session", 3600,
+		bigPolicy,
+	)
+	if err == nil {
+		t.Fatal("expected error for oversized policy, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("error should mention exceeds, got: %v", err)
+	}
+}
+
+func TestRun_ContextCancelled(t *testing.T) {
+	// A pre-cancelled context must be caught before any AWS call is made.
+	ctx, cancel := context.WithTimeout(context.Background(), 0)
+	cancel()
+	// Give the scheduler a moment so the deadline is definitely past.
+	time.Sleep(time.Millisecond)
+
+	cfg := runConfig{
+		roleArn:  "arn:aws:iam::123456789012:role/test-role",
+		duration: "1h",
+		dryRun:   false,
+	}
+	err := run(ctx, cfg)
+	// We expect either a context error or an STS/config error (no real AWS).
+	// What we must NOT see is a nil error or a panic.
+	if err == nil {
+		t.Fatal("expected error with cancelled context, got nil")
+	}
+}
+
+func TestRun_InvalidRoleARN(t *testing.T) {
+	cfg := runConfig{
+		roleArn:  "not-a-valid-arn",
+		duration: "1h",
+	}
+	err := run(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid role ARN, got nil")
+	}
+	if !strings.Contains(err.Error(), "--role-arn") {
+		t.Errorf("error should mention --role-arn flag, got: %v", err)
+	}
+}
+
+func TestRun_InvalidSessionName(t *testing.T) {
+	cfg := runConfig{
+		roleArn:     "arn:aws:iam::123456789012:role/test-role",
+		duration:    "1h",
+		sessionName: "bad name with spaces",
+	}
+	err := run(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid session name, got nil")
+	}
+	if !strings.Contains(err.Error(), "--session-name") {
+		t.Errorf("error should mention --session-name flag, got: %v", err)
 	}
 }
