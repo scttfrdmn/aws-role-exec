@@ -301,3 +301,51 @@ func TestRun_InvalidSessionName(t *testing.T) {
 		t.Errorf("error should mention --session-name flag, got: %v", err)
 	}
 }
+
+func TestRun_InvalidRegion(t *testing.T) {
+	tests := []struct {
+		region string
+	}{
+		{"../../../../etc/passwd"},
+		{"US-EAST-1"},
+		{"us_east_1"},
+		{"not a region"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.region, func(t *testing.T) {
+			cfg := runConfig{
+				roleArn:  "arn:aws:iam::123456789012:role/test-role",
+				duration: "1h",
+				region:   tt.region,
+			}
+			err := run(context.Background(), cfg)
+			if err == nil {
+				t.Fatalf("expected error for invalid region %q, got nil", tt.region)
+			}
+			if !strings.Contains(err.Error(), "--region") {
+				t.Errorf("error should mention --region flag, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestEnvKey(t *testing.T) {
+	tests := []struct {
+		kv   string
+		want string
+	}{
+		{"HOME=/home/user", "HOME"},
+		{"AWS_ACCESS_KEY_ID=AKIA123", "AWS_ACCESS_KEY_ID"},
+		{"NOEQUALS", "NOEQUALS"},
+		{"=value", ""},
+		{"KEY=", "KEY"},
+		{"KEY=val=extra", "KEY"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.kv, func(t *testing.T) {
+			if got := envKey(tt.kv); got != tt.want {
+				t.Errorf("envKey(%q) = %q, want %q", tt.kv, got, tt.want)
+			}
+		})
+	}
+}

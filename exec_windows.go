@@ -65,8 +65,8 @@ func credEnv(creds *credentials, baseEnv []string) []string {
 }
 
 func envKey(kv string) string {
-	for i, c := range kv {
-		if c == '=' {
+	for i := 0; i < len(kv); i++ {
+		if kv[i] == '=' {
 			return kv[:i]
 		}
 	}

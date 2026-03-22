@@ -42,6 +42,9 @@ type runConfig struct {
 // (aws, aws-cn, aws-us-gov, aws-iso, aws-iso-b).
 var roleARNRe = regexp.MustCompile(`^arn:[a-z][a-z0-9-]*:iam::[0-9]{12}:role/[\w+=,.@/-]+$`)
 
+// regionRe matches valid AWS region names (e.g. us-east-1, eu-central-1, ap-southeast-2).
+var regionRe = regexp.MustCompile(`^[a-z]{2,}-[a-z]+-\d+$`)
+
 // validateRoleARN returns an error if arn does not look like a valid IAM role ARN.
 func validateRoleARN(arn string) error {
 	if !roleARNRe.MatchString(arn) {
@@ -97,6 +100,9 @@ func run(ctx context.Context, cfg runConfig) error {
 	if region == "" {
 		region = "us-east-1"
 	}
+	if !regionRe.MatchString(region) {
+		return fmt.Errorf("--region: invalid AWS region %q (expected format: us-east-1)", region)
+	}
 
 	if cfg.dryRun {
 		fmt.Fprintf(os.Stderr, "dry-run: would assume role %s\n", cfg.roleArn)
@@ -111,7 +117,12 @@ func run(ctx context.Context, cfg runConfig) error {
 		return nil
 	}
 
-	creds, err := assumeRole(ctx, region, cfg.roleArn, sessionName, secs, cfg.policy)
+	// Bound the STS round-trip to 30 s so a hung or unreachable endpoint
+	// does not block the caller indefinitely (e.g. in an HPC job prologue).
+	stsCtx, stsCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer stsCancel()
+
+	creds, err := assumeRole(stsCtx, region, cfg.roleArn, sessionName, secs, cfg.policy)
 	if err != nil {
 		return err
 	}

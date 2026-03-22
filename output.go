@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 )
 
@@ -16,7 +18,7 @@ func printCreds(creds *credentials, format, outputPath string) error {
 		// need to overwrite it.
 		f, err := os.OpenFile(outputPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 		if err != nil {
-			if os.IsExist(err) {
+			if errors.Is(err, fs.ErrExist) {
 				return fmt.Errorf("output file %q already exists: remove it first to prevent symlink attacks", outputPath)
 			}
 			return fmt.Errorf("open output file: %w", err)
