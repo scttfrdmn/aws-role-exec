@@ -24,9 +24,11 @@ func TestParseDuration(t *testing.T) {
 		{"13h", 0, true},           // above maximum
 		{"0s", 0, true},            // zero
 		{"invalid", 0, true},
-		{"01:60:00", 0, true}, // minutes out of range
-		{"01:00:60", 0, true}, // seconds out of range
-		{"01:-1:00", 0, true}, // negative minutes
+		{"01:60:00", 0, true},    // minutes out of range
+		{"01:00:60", 0, true},    // seconds out of range
+		{"01:-1:00", 0, true},    // negative minutes
+		{"13:00:00", 0, true},    // hours > 12 (would overflow bounds check)
+		{"99999:00:00", 0, true}, // extreme hours (integer overflow guard)
 	}
 
 	for _, tt := range tests {

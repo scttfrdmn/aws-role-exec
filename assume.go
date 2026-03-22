@@ -126,8 +126,8 @@ func parseDuration(s string) (int32, error) {
 		if err1 != nil || err2 != nil || err3 != nil {
 			return 0, fmt.Errorf("invalid HH:MM:SS format %q", s)
 		}
-		if m < 0 || m > 59 || sec < 0 || sec > 59 {
-			return 0, fmt.Errorf("invalid HH:MM:SS format %q: minutes and seconds must be 0-59", s)
+		if h < 0 || h > 12 || m < 0 || m > 59 || sec < 0 || sec > 59 {
+			return 0, fmt.Errorf("invalid HH:MM:SS format %q: hours must be 0-12, minutes and seconds 0-59", s)
 		}
 		d = time.Duration(h)*time.Hour + time.Duration(m)*time.Minute + time.Duration(sec)*time.Second
 	} else {
