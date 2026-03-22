@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -113,5 +114,16 @@ func TestDefaultSessionName(t *testing.T) {
 		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
 			t.Errorf("defaultSessionName() contains invalid char %q in %q", c, name)
 		}
+	}
+}
+
+func TestRun_DryRun(t *testing.T) {
+	cfg := runConfig{
+		roleArn:  "arn:aws:iam::123456789012:role/test-role",
+		duration: "1h",
+		dryRun:   true,
+	}
+	if err := run(context.Background(), cfg); err != nil {
+		t.Fatalf("run with dry-run: %v", err)
 	}
 }
