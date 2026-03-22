@@ -15,20 +15,18 @@ builds:
     ldflags:
       - -s -w -X main.version={{.Version}}
 archives:
-  - format: tar.gz
+  - formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
-        format: zip
+        formats: [zip]
 checksum:
   name_template: "checksums.txt"
 signs:
   - cmd: cosign
-    certificate: "${artifact}.pem"
     args:
       - sign-blob
-      - "--output-certificate=${certificate}"
-      - "--output-signature=${signature}"
+      - "--bundle=${artifact}.bundle"
       - "${artifact}"
       - --yes
     artifacts: checksum
