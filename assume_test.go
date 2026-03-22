@@ -24,6 +24,9 @@ func TestParseDuration(t *testing.T) {
 		{"13h", 0, true},           // above maximum
 		{"0s", 0, true},            // zero
 		{"invalid", 0, true},
+		{"01:60:00", 0, true}, // minutes out of range
+		{"01:00:60", 0, true}, // seconds out of range
+		{"01:-1:00", 0, true}, // negative minutes
 	}
 
 	for _, tt := range tests {
@@ -51,6 +54,9 @@ func TestCredEnv(t *testing.T) {
 		"HOME=/home/user",
 		"AWS_ACCESS_KEY_ID=old-key",
 		"AWS_SECRET_ACCESS_KEY=old-secret",
+		"AWS_ENDPOINT_URL=http://localhost:4566", // must be stripped
+		"AWS_PROFILE=prod",                       // must be stripped
+		"AWS_SHARED_CREDENTIALS_FILE=/etc/creds", // must be stripped
 		"PATH=/usr/bin",
 	}
 
@@ -63,14 +69,26 @@ func TestCredEnv(t *testing.T) {
 
 	result := credEnv(creds, base)
 
-	// Check old AWS vars are removed
+	// All AWS_* vars from baseEnv must be gone — credentials, endpoint
+	// overrides, profiles, and credential file paths alike.
 	for _, e := range result {
-		if strings.HasPrefix(e, "AWS_ACCESS_KEY_ID=old") || strings.HasPrefix(e, "AWS_SECRET_ACCESS_KEY=old") {
-			t.Errorf("old credential not removed: %s", e)
+		key := envKey(e)
+		if strings.HasPrefix(key, "AWS_") {
+			// The only AWS_* vars allowed are the ones we explicitly inject.
+			allowed := map[string]bool{
+				"AWS_ACCESS_KEY_ID":     true,
+				"AWS_SECRET_ACCESS_KEY": true,
+				"AWS_SESSION_TOKEN":     true,
+				"AWS_DEFAULT_REGION":    true,
+				"AWS_REGION":            true,
+			}
+			if !allowed[key] {
+				t.Errorf("unexpected AWS_* var in child env: %s", e)
+			}
 		}
 	}
 
-	// Check new vars are present
+	// Check new credential vars are present with correct values
 	check := map[string]string{
 		"AWS_ACCESS_KEY_ID":     "ASIA-NEW-KEY",
 		"AWS_SECRET_ACCESS_KEY": "new-secret",
@@ -90,7 +108,7 @@ func TestCredEnv(t *testing.T) {
 		}
 	}
 
-	// Check non-AWS vars are preserved
+	// Non-AWS vars must be preserved
 	for _, e := range result {
 		if strings.HasPrefix(e, "HOME=") {
 			goto homeFound
@@ -114,6 +132,15 @@ func TestDefaultSessionName(t *testing.T) {
 		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
 			t.Errorf("defaultSessionName() contains invalid char %q in %q", c, name)
 		}
+	}
+}
+
+func TestDefaultSessionName_Unique(t *testing.T) {
+	// Two consecutive calls must produce different names (crypto-random suffix).
+	a := defaultSessionName()
+	b := defaultSessionName()
+	if a == b {
+		t.Errorf("defaultSessionName() returned identical names on successive calls: %q", a)
 	}
 }
 

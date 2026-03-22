@@ -10,8 +10,15 @@ import (
 func printCreds(creds *credentials, format, outputPath string) error {
 	var w io.Writer = os.Stdout
 	if outputPath != "" {
-		f, err := os.OpenFile(outputPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+		// O_EXCL refuses to create the file if it already exists (as a regular
+		// file or a symlink), preventing symlink attacks in shared directories
+		// such as /tmp or HPC job scratch paths. Remove the file first if you
+		// need to overwrite it.
+		f, err := os.OpenFile(outputPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 		if err != nil {
+			if os.IsExist(err) {
+				return fmt.Errorf("output file %q already exists: remove it first to prevent symlink attacks", outputPath)
+			}
 			return fmt.Errorf("open output file: %w", err)
 		}
 		defer f.Close()

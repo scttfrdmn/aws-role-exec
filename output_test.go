@@ -147,3 +147,22 @@ func TestPrintCreds_FileOutput(t *testing.T) {
 		t.Errorf("file missing [default] section, got:\n%s", data)
 	}
 }
+
+func TestPrintCreds_FileOutput_RefusesExisting(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "credentials")
+
+	// First write — must succeed.
+	if err := printCreds(testCreds, "credentials-file", outPath); err != nil {
+		t.Fatalf("first write: %v", err)
+	}
+
+	// Second write to the same path — must fail with a clear error (O_EXCL).
+	err := printCreds(testCreds, "credentials-file", outPath)
+	if err == nil {
+		t.Fatal("second write to existing path: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("expected 'already exists' in error, got: %v", err)
+	}
+}

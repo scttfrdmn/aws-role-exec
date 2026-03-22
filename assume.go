@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/user"
@@ -124,6 +126,9 @@ func parseDuration(s string) (int32, error) {
 		if err1 != nil || err2 != nil || err3 != nil {
 			return 0, fmt.Errorf("invalid HH:MM:SS format %q", s)
 		}
+		if m < 0 || m > 59 || sec < 0 || sec > 59 {
+			return 0, fmt.Errorf("invalid HH:MM:SS format %q: minutes and seconds must be 0-59", s)
+		}
 		d = time.Duration(h)*time.Hour + time.Duration(m)*time.Minute + time.Duration(sec)*time.Second
 	} else {
 		var err error
@@ -149,7 +154,8 @@ func parseDuration(s string) (int32, error) {
 func defaultSessionName() string {
 	name := "aws-role-exec"
 	if u, err := user.Current(); err == nil && u.Username != "" {
-		// sanitize: STS session names allow [a-zA-Z0-9=,.@-]
+		// Keep only [a-zA-Z0-9] — a strict subset of the STS-allowed set
+		// [a-zA-Z0-9=,.@-] — to avoid ambiguous characters in CloudTrail.
 		safe := strings.Map(func(r rune) rune {
 			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
 				return r
@@ -158,5 +164,13 @@ func defaultSessionName() string {
 		}, u.Username)
 		name = "aws-role-exec-" + safe
 	}
-	return fmt.Sprintf("%s-%d", name, os.Getpid())
+	// Use a crypto-random suffix instead of the process ID so session names
+	// are not predictable from username + PID, preventing an attacker from
+	// correlating or pre-computing CloudTrail session names.
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to PID if crypto/rand is unavailable (should never happen).
+		return fmt.Sprintf("%s-%d", name, os.Getpid())
+	}
+	return fmt.Sprintf("%s-%s", name, hex.EncodeToString(b))
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 )
 
@@ -31,6 +32,10 @@ func execWithCreds(creds *credentials, command []string) error {
 }
 
 // credEnv returns a copy of baseEnv with AWS credential vars set/overridden.
+// All AWS_* prefixed vars are stripped from baseEnv to prevent inherited
+// endpoint overrides (AWS_ENDPOINT_URL), profile redirects (AWS_PROFILE),
+// credential file paths (AWS_SHARED_CREDENTIALS_FILE), and other SDK
+// configuration from interfering with the freshly-injected credentials.
 func credEnv(creds *credentials, baseEnv []string) []string {
 	overrides := map[string]string{
 		"AWS_ACCESS_KEY_ID":     creds.AccessKeyID,
@@ -40,11 +45,12 @@ func credEnv(creds *credentials, baseEnv []string) []string {
 		"AWS_REGION":            creds.Region,
 	}
 
-	// Filter out any existing AWS credential vars from the base environment
+	// Strip ALL AWS_* vars from the inherited environment so no inherited
+	// SDK configuration (endpoint, profile, credentials file, etc.) can
+	// interfere with the injected credentials.
 	filtered := make([]string, 0, len(baseEnv)+len(overrides))
 	for _, e := range baseEnv {
-		key := envKey(e)
-		if _, overridden := overrides[key]; !overridden {
+		if !strings.HasPrefix(envKey(e), "AWS_") {
 			filtered = append(filtered, e)
 		}
 	}
