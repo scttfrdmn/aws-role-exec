@@ -527,6 +527,18 @@ func TestValidatePolicyStructure(t *testing.T) {
 			errMsg:  "Effect",
 		},
 		{
+			name:    "invalid Effect value",
+			policy:  `{"Statement":[{"Effect":"Maybe","Action":"s3:*","Resource":"*"}]}`,
+			wantErr: true,
+			errMsg:  "Effect",
+		},
+		{
+			name:    "Effect not a string",
+			policy:  `{"Statement":[{"Effect":42,"Action":"s3:*","Resource":"*"}]}`,
+			wantErr: true,
+			errMsg:  "Effect",
+		},
+		{
 			name:    "empty Statement array is valid",
 			policy:  `{"Statement":[]}`,
 			wantErr: false,

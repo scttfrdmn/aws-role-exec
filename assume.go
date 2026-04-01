@@ -220,8 +220,13 @@ func validatePolicyStructure(policy string) error {
 		if err := json.Unmarshal(raw, &stmt); err != nil {
 			return fmt.Errorf("--policy: Statement[%d] is not a JSON object", i)
 		}
-		if _, ok := stmt["Effect"]; !ok {
+		effectRaw, ok := stmt["Effect"]
+		if !ok {
 			return fmt.Errorf("--policy: Statement[%d] is missing required \"Effect\" field", i)
+		}
+		var effect string
+		if err := json.Unmarshal(effectRaw, &effect); err != nil || (effect != "Allow" && effect != "Deny") {
+			return fmt.Errorf("--policy: Statement[%d] has invalid Effect value (must be \"Allow\" or \"Deny\")", i)
 		}
 	}
 	return nil
