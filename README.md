@@ -107,11 +107,12 @@ aws-role-exec \
 |------|------|---------|-------------|
 | `--role-arn` | string | *(required)* | IAM role ARN to assume |
 | `--duration` | string | `1h` | Credential lifetime. Accepts Go durations (`1h30m`, `45m`) or HPC walltime format (`HH:MM:SS`). Min: 15m, max: 12h |
-| `--session-name` | string | `aws-role-exec-<user>-<pid>` | STS RoleSessionName. Appears in CloudTrail |
+| `--session-name` | string | `aws-role-exec-<user>-<hex>` | STS RoleSessionName. Appears in CloudTrail |
 | `--region` | string | `AWS_DEFAULT_REGION` or `us-east-1` | AWS region for the STS endpoint |
-| `--format` | string | `exec` | Output mode when no command given: `env`, `json`, or `credentials-file` |
-| `--output` | string | stdout | File path for `--format credentials-file` |
+| `--format` | string | `env` | Output mode when no command given: `env`, `json`, or `credentials-file` |
+| `--output` | string | stdout | Write credentials to this file instead of stdout (all formats) |
 | `--policy` | string | *(none)* | Inline JSON session policy to scope the assumed credentials further |
+| `--sts-timeout` | string | `30s` | Timeout for the STS AssumeRole API call (Go duration, e.g. `10s`, `1m`) |
 | `--dry-run` | bool | false | Print what would happen without calling STS |
 | `--version` | | | Print version and exit |
 
