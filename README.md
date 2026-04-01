@@ -119,6 +119,458 @@ aws-role-exec \
 
 ## Examples
 
+- [Interactive shell](#interactive-shell-sessions)
+- [CI/CD pipelines](#cicd-pipelines)
+- [Scoping down permissions](#scoping-down-permissions-with---policy)
+- [Containers](#containers)
+- [Tools that don't read env vars](#tools-that-dont-read-environment-variables)
+- [Notebooks](#notebooks-and-interactive-tools)
+- [Workflow managers](#workflow-managers-nextflow-snakemake-wdl)
+- [HPC / Slurm](#hpc--slurm)
+- [Amazon Bedrock](#amazon-bedrock)
+- [Open OnDemand](#open-ondemand)
+
+---
+
+### Interactive shell sessions
+
+#### Temporarily assume a role in your current terminal
+
+```bash
+# Assume and export into current shell (eval pattern)
+eval $(aws-role-exec \
+    --role-arn arn:aws:iam::123456789012:role/admin-readonly \
+    --duration 1h \
+    --format env)
+
+# Check who you are now
+aws sts get-caller-identity
+
+# When done, clear the credentials
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+```
+
+#### Open a subshell with a different role
+
+```bash
+aws-role-exec \
+    --role-arn arn:aws:iam::123456789012:role/prod-admin \
+    --duration 30m \
+    --session-name "prod-investigation-${USER}" \
+    -- bash
+
+# You are now in a subshell with prod-admin credentials.
+# Ctrl-D or 'exit' to return to your original credentials.
+```
+
+#### Cross-account access
+
+```bash
+# Access a resource in another AWS account
+aws-role-exec \
+    --role-arn arn:aws:iam::999888777666:role/cross-account-data-reader \
+    --duration 1h \
+    --session-name "cross-account-${USER}" \
+    -- aws s3 ls s3://partner-data-bucket/
+```
+
+---
+
+### CI/CD pipelines
+
+Long-lived AWS credentials in CI secrets are a supply-chain risk. Assume a short-lived role with exactly the permissions each stage needs.
+
+#### GitHub Actions: assume role per job step
+
+```yaml
+# .github/workflows/deploy.yml
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # needed for OIDC
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure base AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789012:role/github-oidc-base
+          aws-region: us-east-1
+
+      - name: Deploy with scoped credentials
+        run: |
+          exec aws-role-exec \
+              --role-arn     arn:aws:iam::123456789012:role/deploy-production \
+              --duration     15m \
+              --session-name "github-${GITHUB_RUN_ID}-deploy" \
+              --policy '{
+                "Version": "2012-10-17",
+                "Statement": [{"Effect":"Allow","Action":"s3:PutObject",
+                  "Resource":"arn:aws:s3:::my-deploy-bucket/*"}]
+              }' \
+              -- aws s3 sync dist/ s3://my-deploy-bucket/
+```
+
+#### Jenkins: per-stage role assumption
+
+```groovy
+// Jenkinsfile
+pipeline {
+    agent any
+    stages {
+        stage('Run Tests') {
+            steps {
+                sh '''
+                    exec aws-role-exec \
+                        --role-arn arn:aws:iam::123456789012:role/ci-test-readonly \
+                        --duration 30m \
+                        --session-name "jenkins-${BUILD_NUMBER}-test" \
+                        -- ./run-tests.sh
+                '''
+            }
+        }
+        stage('Deploy') {
+            when { branch 'main' }
+            steps {
+                sh '''
+                    exec aws-role-exec \
+                        --role-arn arn:aws:iam::123456789012:role/ci-deploy \
+                        --duration 15m \
+                        --session-name "jenkins-${BUILD_NUMBER}-deploy" \
+                        -- ./deploy.sh
+                '''
+            }
+        }
+    }
+}
+```
+
+#### GitLab CI: job-scoped credentials
+
+```yaml
+# .gitlab-ci.yml
+test:
+  script:
+    - |
+      exec aws-role-exec \
+          --role-arn arn:aws:iam::123456789012:role/gitlab-ci-test \
+          --duration 30m \
+          --session-name "gitlab-${CI_JOB_ID}" \
+          -- pytest tests/
+
+deploy:
+  script:
+    - |
+      exec aws-role-exec \
+          --role-arn arn:aws:iam::123456789012:role/gitlab-ci-deploy \
+          --duration 15m \
+          --session-name "gitlab-${CI_JOB_ID}-deploy" \
+          -- ./scripts/deploy.sh
+  only:
+    - main
+```
+
+---
+
+### Scoping down permissions with --policy
+
+Even if the assumed role has broad permissions, you can attach a session policy to restrict what the child process can do. The effective permissions are the intersection of the role's policies and the session policy.
+
+#### Allow only specific S3 prefix
+
+```bash
+aws-role-exec \
+    --role-arn arn:aws:iam::123456789012:role/full-data-lake-role \
+    --policy '{
+      "Version": "2012-10-17",
+      "Statement": [{
+        "Effect": "Allow",
+        "Action": ["s3:GetObject", "s3:ListBucket"],
+        "Resource": [
+          "arn:aws:s3:::data-lake",
+          "arn:aws:s3:::data-lake/project-x/*"
+        ]
+      }]
+    }' \
+    -- python3 etl.py --project project-x
+```
+
+#### Allow only specific DynamoDB table
+
+```bash
+aws-role-exec \
+    --role-arn arn:aws:iam::123456789012:role/db-admin \
+    --policy '{
+      "Version": "2012-10-17",
+      "Statement": [{
+        "Effect": "Allow",
+        "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"],
+        "Resource": "arn:aws:dynamodb:us-east-1:123456789012:table/my-specific-table"
+      }]
+    }' \
+    -- ./data-migrator
+```
+
+#### Read-only session from a read-write role
+
+```bash
+aws-role-exec \
+    --role-arn arn:aws:iam::123456789012:role/rw-role \
+    --policy '{
+      "Version": "2012-10-17",
+      "Statement": [{
+        "Effect": "Allow",
+        "Action": ["s3:GetObject", "s3:ListBucket", "s3:HeadObject"],
+        "Resource": "*"
+      }]
+    }' \
+    -- aws s3 sync s3://my-bucket/ ./local-backup/
+```
+
+---
+
+### Containers
+
+#### Docker ENTRYPOINT: inject credentials at container start
+
+```dockerfile
+# Dockerfile
+FROM python:3.12-slim
+RUN pip install boto3
+
+# Install aws-role-exec from GitHub Releases (auto-detects arch)
+RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && \
+    curl -fsSL \
+      "https://github.com/scttfrdmn/aws-role-exec/releases/latest/download/aws-role-exec_linux_${ARCH}.tar.gz" \
+    | tar -xz -C /usr/local/bin aws-role-exec
+
+COPY entrypoint.sh /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+```
+
+```bash
+# entrypoint.sh
+#!/bin/bash
+exec aws-role-exec \
+    --role-arn     "${AWS_ROLE_ARN}" \
+    --duration     "${AWS_SESSION_DURATION:-1h}" \
+    --session-name "${AWS_SESSION_NAME:-container-$(hostname)}" \
+    -- "$@"
+```
+
+```bash
+docker run \
+    -e AWS_ROLE_ARN=arn:aws:iam::123456789012:role/my-container-role \
+    -e AWS_SESSION_DURATION=2h \
+    -e AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
+    -e AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
+    my-image python3 process.py
+```
+
+#### Kubernetes init container: write credentials file before main container
+
+Build a minimal init container image containing aws-role-exec:
+```dockerfile
+# Dockerfile.init
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
+    ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && \
+    curl -fsSL \
+      "https://github.com/scttfrdmn/aws-role-exec/releases/latest/download/aws-role-exec_linux_${ARCH}.tar.gz" \
+    | tar -xz -C /usr/local/bin aws-role-exec && \
+    apt-get purge -y curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+ENTRYPOINT ["/usr/local/bin/aws-role-exec"]
+```
+
+Then push it to your registry (e.g. `your-registry/aws-role-exec-init:latest`) and reference it in the pod spec:
+
+```yaml
+# pod.yaml
+initContainers:
+  - name: aws-creds
+    image: your-registry/aws-role-exec-init:latest
+    command:
+      - aws-role-exec
+      - --role-arn
+      - arn:aws:iam::123456789012:role/k8s-job-role
+      - --duration
+      - 4h
+      - --format
+      - credentials-file
+      - --output
+      - /aws-creds/credentials
+    volumeMounts:
+      - name: aws-creds
+        mountPath: /aws-creds
+containers:
+  - name: worker
+    image: my-worker:latest
+    env:
+      - name: AWS_SHARED_CREDENTIALS_FILE
+        value: /aws-creds/credentials
+    volumeMounts:
+      - name: aws-creds
+        mountPath: /aws-creds
+        readOnly: true
+volumes:
+  - name: aws-creds
+    emptyDir:
+      medium: Memory   # credentials never hit disk
+```
+
+#### Docker Compose: scoped credentials per service
+
+```yaml
+# docker-compose.yml
+services:
+  processor:
+    image: my-processor
+    environment:
+      AWS_ROLE_ARN: arn:aws:iam::123456789012:role/processor-role
+    entrypoint:
+      - aws-role-exec
+      - --role-arn
+      - ${AWS_ROLE_ARN}
+      - --duration
+      - 2h
+      - --
+```
+
+---
+
+### Tools that don't read environment variables
+
+Some tools only read `~/.aws/credentials` or a named profile and ignore `AWS_*` env vars. Use the credentials-file pattern:
+
+```bash
+CREDS_FILE=$(mktemp /tmp/aws-creds-XXXXX)
+
+aws-role-exec \
+    --role-arn arn:aws:iam::123456789012:role/my-role \
+    --duration 1h \
+    --format credentials-file \
+    --output "$CREDS_FILE"
+
+# Terraform reads credentials from file
+AWS_SHARED_CREDENTIALS_FILE="$CREDS_FILE" terraform apply
+
+# Pulumi
+AWS_SHARED_CREDENTIALS_FILE="$CREDS_FILE" pulumi up
+
+# Ansible
+AWS_SHARED_CREDENTIALS_FILE="$CREDS_FILE" ansible-playbook playbook.yml
+
+# Clean up when done
+rm -f "$CREDS_FILE"
+```
+
+---
+
+### Notebooks and interactive tools
+
+#### JupyterLab: run a single cell with elevated permissions
+
+In a cell before the sensitive section:
+```python
+import subprocess, os, json
+
+result = subprocess.run(
+    ["aws-role-exec",
+     "--role-arn", "arn:aws:iam::123456789012:role/ml-training-role",
+     "--duration", "2h",
+     "--format", "json"],
+    capture_output=True, text=True, check=True
+)
+creds = json.loads(result.stdout)
+
+os.environ["AWS_ACCESS_KEY_ID"]     = creds["AccessKeyId"]
+os.environ["AWS_SECRET_ACCESS_KEY"] = creds["SecretAccessKey"]
+os.environ["AWS_SESSION_TOKEN"]     = creds["SessionToken"]
+
+# boto3 calls from here use the scoped role
+import boto3
+s3 = boto3.client("s3")
+```
+
+#### JupyterLab: launch the whole server under a role
+
+```bash
+# In your ~/.bashrc or lab launch script:
+aws-role-exec \
+    --role-arn arn:aws:iam::123456789012:role/ml-notebook-role \
+    --duration 8h \
+    --session-name "jupyter-${USER}" \
+    -- jupyter lab --no-browser
+```
+
+---
+
+### Workflow managers (Nextflow, Snakemake, WDL)
+
+#### Nextflow: wrap the entire workflow in a scoped role
+
+```bash
+# In your launch script, exec into the assumed role.
+# All Nextflow processes inherit the credentials through the process environment.
+exec aws-role-exec \
+    --role-arn arn:aws:iam::123456789012:role/nextflow-pipeline-role \
+    --duration 08:00:00 \
+    --session-name "nxf-${USER}-$(date +%s)" \
+    -- nextflow run nf-core/rnaseq \
+        -profile aws \
+        --input  s3://nf-bucket/samplesheet.csv \
+        --outdir s3://nf-bucket/results/
+```
+
+#### Nextflow: per-process role assumption via beforeScript
+
+```groovy
+// nextflow.config — assume a tighter role for each process
+process {
+    withLabel: 'aws_access' {
+        beforeScript = """
+            eval \$(aws-role-exec \
+                --role-arn arn:aws:iam::123456789012:role/nf-task-role \
+                --duration 01:00:00 \
+                --session-name "nf-task-\${PROCESS_NAME}" \
+                --format env)
+        """
+    }
+}
+```
+
+#### Snakemake: per-rule credential injection
+
+```python
+# Snakefile
+rule download_from_s3:
+    output: "data/{sample}.fastq.gz"
+    shell:
+        """
+        aws-role-exec \
+            --role-arn arn:aws:iam::123456789012:role/snakemake-s3-reader \
+            --duration 00:30:00 \
+            --session-name "snakemake-download-{wildcards.sample}" \
+            -- aws s3 cp s3://raw-data/{wildcards.sample}.fastq.gz {output}
+        """
+
+rule run_analysis:
+    input:  "data/{sample}.fastq.gz"
+    output: "results/{sample}.tsv"
+    shell:
+        """
+        exec aws-role-exec \
+            --role-arn arn:aws:iam::123456789012:role/snakemake-compute \
+            --duration 04:00:00 \
+            --session-name "snakemake-{wildcards.sample}" \
+            -- python3 analyze.py --input {input} --output {output}
+        """
+```
+
+---
+
 ### HPC / Slurm
 
 #### Slurm batch script: S3 data access scoped to job lifetime
@@ -244,7 +696,7 @@ echo "AWS_SHARED_CREDENTIALS_FILE=${CREDS_FILE}" >> "${PBS_ENVIRONMENT}"
 
 ---
 
-### Amazon Bedrock — AI inference from HPC jobs
+### Amazon Bedrock
 
 Bedrock is a natural fit for HPC workflows: models are invoked on demand without managing GPU instances, and `aws-role-exec` scopes the credentials to exactly what the job needs.
 
@@ -334,70 +786,6 @@ aws-role-exec \
 
 ---
 
-### Workflow managers (Nextflow, Snakemake, WDL)
-
-#### Nextflow: wrap the entire workflow in a scoped role
-
-```bash
-# In your launch script, exec into the assumed role.
-# All Nextflow processes inherit the credentials through the process environment.
-exec aws-role-exec \
-    --role-arn arn:aws:iam::123456789012:role/nextflow-pipeline-role \
-    --duration 08:00:00 \
-    --session-name "nxf-${USER}-$(date +%s)" \
-    -- nextflow run nf-core/rnaseq \
-        -profile aws \
-        --input  s3://nf-bucket/samplesheet.csv \
-        --outdir s3://nf-bucket/results/
-```
-
-#### Nextflow: per-process role assumption via beforeScript
-
-```groovy
-// nextflow.config — assume a tighter role for each process
-process {
-    withLabel: 'aws_access' {
-        beforeScript = """
-            eval \$(aws-role-exec \
-                --role-arn arn:aws:iam::123456789012:role/nf-task-role \
-                --duration 01:00:00 \
-                --session-name "nf-task-\${PROCESS_NAME}" \
-                --format env)
-        """
-    }
-}
-```
-
-#### Snakemake: per-rule credential injection
-
-```python
-# Snakefile
-rule download_from_s3:
-    output: "data/{sample}.fastq.gz"
-    shell:
-        """
-        aws-role-exec \
-            --role-arn arn:aws:iam::123456789012:role/snakemake-s3-reader \
-            --duration 00:30:00 \
-            --session-name "snakemake-download-{wildcards.sample}" \
-            -- aws s3 cp s3://raw-data/{wildcards.sample}.fastq.gz {output}
-        """
-
-rule run_analysis:
-    input:  "data/{sample}.fastq.gz"
-    output: "results/{sample}.tsv"
-    shell:
-        """
-        exec aws-role-exec \
-            --role-arn arn:aws:iam::123456789012:role/snakemake-compute \
-            --duration 04:00:00 \
-            --session-name "snakemake-{wildcards.sample}" \
-            -- python3 analyze.py --input {input} --output {output}
-        """
-```
-
----
-
 ### Open OnDemand
 
 #### Batch Connect: inject credentials before a JupyterLab session
@@ -432,381 +820,6 @@ export AWS_SESSION_TOKEN=$(echo "$CREDS_JSON"     | jq -r .SessionToken)
 
 # Now invoke the adapter binary with scoped credentials
 ood-aws-batch-adapter submit <<< "${JOB_SPEC_JSON}"
-```
-
----
-
-### CI/CD pipelines
-
-Long-lived AWS credentials in CI secrets are a supply-chain risk. Assume a short-lived role with exactly the permissions each stage needs.
-
-#### GitHub Actions: assume role per job step
-
-```yaml
-# .github/workflows/deploy.yml
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write   # needed for OIDC
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Configure base AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::123456789012:role/github-oidc-base
-          aws-region: us-east-1
-
-      - name: Deploy with scoped credentials
-        run: |
-          exec aws-role-exec \
-              --role-arn     arn:aws:iam::123456789012:role/deploy-production \
-              --duration     15m \
-              --session-name "github-${GITHUB_RUN_ID}-deploy" \
-              --policy '{
-                "Version": "2012-10-17",
-                "Statement": [{"Effect":"Allow","Action":"s3:PutObject",
-                  "Resource":"arn:aws:s3:::my-deploy-bucket/*"}]
-              }' \
-              -- aws s3 sync dist/ s3://my-deploy-bucket/
-```
-
-#### Jenkins: per-stage role assumption
-
-```groovy
-// Jenkinsfile
-pipeline {
-    agent any
-    stages {
-        stage('Run Tests') {
-            steps {
-                sh '''
-                    exec aws-role-exec \
-                        --role-arn arn:aws:iam::123456789012:role/ci-test-readonly \
-                        --duration 30m \
-                        --session-name "jenkins-${BUILD_NUMBER}-test" \
-                        -- ./run-tests.sh
-                '''
-            }
-        }
-        stage('Deploy') {
-            when { branch 'main' }
-            steps {
-                sh '''
-                    exec aws-role-exec \
-                        --role-arn arn:aws:iam::123456789012:role/ci-deploy \
-                        --duration 15m \
-                        --session-name "jenkins-${BUILD_NUMBER}-deploy" \
-                        -- ./deploy.sh
-                '''
-            }
-        }
-    }
-}
-```
-
-#### GitLab CI: job-scoped credentials
-
-```yaml
-# .gitlab-ci.yml
-test:
-  script:
-    - |
-      exec aws-role-exec \
-          --role-arn arn:aws:iam::123456789012:role/gitlab-ci-test \
-          --duration 30m \
-          --session-name "gitlab-${CI_JOB_ID}" \
-          -- pytest tests/
-
-deploy:
-  script:
-    - |
-      exec aws-role-exec \
-          --role-arn arn:aws:iam::123456789012:role/gitlab-ci-deploy \
-          --duration 15m \
-          --session-name "gitlab-${CI_JOB_ID}-deploy" \
-          -- ./scripts/deploy.sh
-  only:
-    - main
-```
-
----
-
-### Containers
-
-#### Docker ENTRYPOINT: inject credentials at container start
-
-```dockerfile
-# Dockerfile
-FROM python:3.12-slim
-RUN pip install boto3
-
-# Install aws-role-exec from GitHub Releases (auto-detects arch)
-RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && \
-    curl -fsSL \
-      "https://github.com/scttfrdmn/aws-role-exec/releases/latest/download/aws-role-exec_linux_${ARCH}.tar.gz" \
-    | tar -xz -C /usr/local/bin aws-role-exec
-
-COPY entrypoint.sh /entrypoint.sh
-ENTRYPOINT ["/entrypoint.sh"]
-```
-
-```bash
-# entrypoint.sh
-#!/bin/bash
-exec aws-role-exec \
-    --role-arn     "${AWS_ROLE_ARN}" \
-    --duration     "${AWS_SESSION_DURATION:-1h}" \
-    --session-name "${AWS_SESSION_NAME:-container-$(hostname)}" \
-    -- "$@"
-```
-
-```bash
-docker run \
-    -e AWS_ROLE_ARN=arn:aws:iam::123456789012:role/my-container-role \
-    -e AWS_SESSION_DURATION=2h \
-    -e AWS_ACCESS_KEY_ID="${AWS_ACCESS_KEY_ID}" \
-    -e AWS_SECRET_ACCESS_KEY="${AWS_SECRET_ACCESS_KEY}" \
-    my-image python3 process.py
-```
-
-#### Kubernetes init container: write credentials file before main container
-
-Build a minimal init container image containing aws-role-exec:
-```dockerfile
-# Dockerfile.init
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
-    ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && \
-    curl -fsSL \
-      "https://github.com/scttfrdmn/aws-role-exec/releases/latest/download/aws-role-exec_linux_${ARCH}.tar.gz" \
-    | tar -xz -C /usr/local/bin aws-role-exec && \
-    apt-get purge -y curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
-ENTRYPOINT ["/usr/local/bin/aws-role-exec"]
-```
-
-Then push it to your registry (e.g. `your-registry/aws-role-exec-init:latest`) and reference it in the pod spec:
-
-```yaml
-# pod.yaml
-initContainers:
-  - name: aws-creds
-    image: your-registry/aws-role-exec-init:latest
-    command:
-      - aws-role-exec
-      - --role-arn
-      - arn:aws:iam::123456789012:role/k8s-job-role
-      - --duration
-      - 4h
-      - --format
-      - credentials-file
-      - --output
-      - /aws-creds/credentials
-    volumeMounts:
-      - name: aws-creds
-        mountPath: /aws-creds
-containers:
-  - name: worker
-    image: my-worker:latest
-    env:
-      - name: AWS_SHARED_CREDENTIALS_FILE
-        value: /aws-creds/credentials
-    volumeMounts:
-      - name: aws-creds
-        mountPath: /aws-creds
-        readOnly: true
-volumes:
-  - name: aws-creds
-    emptyDir:
-      medium: Memory   # credentials never hit disk
-```
-
-#### Docker Compose: scoped credentials per service
-
-```yaml
-# docker-compose.yml
-services:
-  processor:
-    image: my-processor
-    environment:
-      AWS_ROLE_ARN: arn:aws:iam::123456789012:role/processor-role
-    entrypoint:
-      - aws-role-exec
-      - --role-arn
-      - ${AWS_ROLE_ARN}
-      - --duration
-      - 2h
-      - --
-```
-
----
-
-### Interactive shell sessions
-
-#### Temporarily assume a role in your current terminal
-
-```bash
-# Assume and export into current shell (eval pattern)
-eval $(aws-role-exec \
-    --role-arn arn:aws:iam::123456789012:role/admin-readonly \
-    --duration 1h \
-    --format env)
-
-# Check who you are now
-aws sts get-caller-identity
-
-# When done, clear the credentials
-unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
-```
-
-#### Open a subshell with a different role
-
-```bash
-aws-role-exec \
-    --role-arn arn:aws:iam::123456789012:role/prod-admin \
-    --duration 30m \
-    --session-name "prod-investigation-${USER}" \
-    -- bash
-
-# You are now in a subshell with prod-admin credentials.
-# Ctrl-D or 'exit' to return to your original credentials.
-```
-
-#### Cross-account access
-
-```bash
-# Access a resource in another AWS account
-aws-role-exec \
-    --role-arn arn:aws:iam::999888777666:role/cross-account-data-reader \
-    --duration 1h \
-    --session-name "cross-account-${USER}" \
-    -- aws s3 ls s3://partner-data-bucket/
-```
-
----
-
-### Notebooks and interactive tools
-
-#### JupyterLab: run a single cell with elevated permissions
-
-In a cell before the sensitive section:
-```python
-import subprocess, os, json
-
-result = subprocess.run(
-    ["aws-role-exec",
-     "--role-arn", "arn:aws:iam::123456789012:role/ml-training-role",
-     "--duration", "2h",
-     "--format", "json"],
-    capture_output=True, text=True, check=True
-)
-creds = json.loads(result.stdout)
-
-os.environ["AWS_ACCESS_KEY_ID"]     = creds["AccessKeyId"]
-os.environ["AWS_SECRET_ACCESS_KEY"] = creds["SecretAccessKey"]
-os.environ["AWS_SESSION_TOKEN"]     = creds["SessionToken"]
-
-# boto3 calls from here use the scoped role
-import boto3
-s3 = boto3.client("s3")
-```
-
-#### JupyterLab: launch the whole server under a role
-
-```bash
-# In your ~/.bashrc or lab launch script:
-aws-role-exec \
-    --role-arn arn:aws:iam::123456789012:role/ml-notebook-role \
-    --duration 8h \
-    --session-name "jupyter-${USER}" \
-    -- jupyter lab --no-browser
-```
-
----
-
-### Tools that don't read environment variables
-
-Some tools only read `~/.aws/credentials` or a named profile and ignore `AWS_*` env vars. Use the credentials-file pattern:
-
-```bash
-CREDS_FILE=$(mktemp /tmp/aws-creds-XXXXX)
-
-aws-role-exec \
-    --role-arn arn:aws:iam::123456789012:role/my-role \
-    --duration 1h \
-    --format credentials-file \
-    --output "$CREDS_FILE"
-
-# Terraform reads credentials from file
-AWS_SHARED_CREDENTIALS_FILE="$CREDS_FILE" terraform apply
-
-# Pulumi
-AWS_SHARED_CREDENTIALS_FILE="$CREDS_FILE" pulumi up
-
-# Ansible
-AWS_SHARED_CREDENTIALS_FILE="$CREDS_FILE" ansible-playbook playbook.yml
-
-# Clean up when done
-rm -f "$CREDS_FILE"
-```
-
----
-
-### Scoping down permissions with --policy
-
-Even if the assumed role has broad permissions, you can attach a session policy to restrict what the child process can do. The effective permissions are the intersection of the role's policies and the session policy.
-
-#### Allow only specific S3 prefix
-
-```bash
-aws-role-exec \
-    --role-arn arn:aws:iam::123456789012:role/full-data-lake-role \
-    --policy '{
-      "Version": "2012-10-17",
-      "Statement": [{
-        "Effect": "Allow",
-        "Action": ["s3:GetObject", "s3:ListBucket"],
-        "Resource": [
-          "arn:aws:s3:::data-lake",
-          "arn:aws:s3:::data-lake/project-x/*"
-        ]
-      }]
-    }' \
-    -- python3 etl.py --project project-x
-```
-
-#### Allow only specific DynamoDB table
-
-```bash
-aws-role-exec \
-    --role-arn arn:aws:iam::123456789012:role/db-admin \
-    --policy '{
-      "Version": "2012-10-17",
-      "Statement": [{
-        "Effect": "Allow",
-        "Action": ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"],
-        "Resource": "arn:aws:dynamodb:us-east-1:123456789012:table/my-specific-table"
-      }]
-    }' \
-    -- ./data-migrator
-```
-
-#### Read-only session from a read-write role
-
-```bash
-aws-role-exec \
-    --role-arn arn:aws:iam::123456789012:role/rw-role \
-    --policy '{
-      "Version": "2012-10-17",
-      "Statement": [{
-        "Effect": "Allow",
-        "Action": ["s3:GetObject", "s3:ListBucket", "s3:HeadObject"],
-        "Resource": "*"
-      }]
-    }' \
-    -- aws s3 sync s3://my-bucket/ ./local-backup/
 ```
 
 ---
