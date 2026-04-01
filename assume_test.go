@@ -304,6 +304,22 @@ func TestRun_InvalidSessionName(t *testing.T) {
 	}
 }
 
+func TestRun_InvalidStsTimeout(t *testing.T) {
+	cfg := runConfig{
+		roleArn:    "arn:aws:iam::123456789012:role/test-role",
+		duration:   "1h",
+		stsTimeout: "not-a-duration",
+		dryRun:     true, // short-circuits before STS; timeout is validated first
+	}
+	err := run(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid --sts-timeout, got nil")
+	}
+	if !strings.Contains(err.Error(), "--sts-timeout") {
+		t.Errorf("error should mention --sts-timeout, got: %v", err)
+	}
+}
+
 func TestRun_InvalidRegion(t *testing.T) {
 	tests := []struct {
 		region string
@@ -385,6 +401,24 @@ func TestExecWithCreds_EmptyCommandElement(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "empty") {
 		t.Errorf("error should mention 'empty', got: %v", err)
+	}
+}
+
+// TestExecWithCreds_EmptyCommandArray verifies that an empty command slice
+// produces a clear "no command specified" error.
+func TestExecWithCreds_EmptyCommandArray(t *testing.T) {
+	creds := &credentials{
+		AccessKeyID:     "AKIA",
+		SecretAccessKey: "secret",
+		SessionToken:    "token",
+		Region:          "us-east-1",
+	}
+	err := execWithCreds(creds, []string{})
+	if err == nil {
+		t.Fatal("expected error for empty command slice, got nil")
+	}
+	if !strings.Contains(err.Error(), "no command") {
+		t.Errorf("error should mention 'no command', got: %v", err)
 	}
 }
 

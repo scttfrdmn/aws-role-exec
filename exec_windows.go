@@ -21,6 +21,12 @@ func execWithCreds(creds *credentials, command []string) error {
 
 	env := credEnv(creds, os.Environ())
 
+	// Resolve the binary path explicitly so the error message matches the Unix
+	// path ("command not found: X") rather than the raw OS error from cmd.Run.
+	if _, err := exec.LookPath(command[0]); err != nil {
+		return fmt.Errorf("command not found: %s: %w", command[0], err)
+	}
+
 	cmd := exec.Command(command[0], command[1:]...)
 	cmd.Env = env
 	cmd.Stdin = os.Stdin

@@ -281,6 +281,28 @@ func TestPrintCredentialsFile_CarriageReturnInjection(t *testing.T) {
 	}
 }
 
+// TestPrintCredentialsFile_NewlineInRegion verifies that a newline in the
+// region field is rejected, even though it is the last field written.
+func TestPrintCredentialsFile_NewlineInRegion(t *testing.T) {
+	creds := &credentials{
+		AccessKeyID:     "AKIAIOSFODNN7EXAMPLE",
+		SecretAccessKey: "secret",
+		SessionToken:    "token",
+		Region:          "us-east-1\ninjected = bad",
+	}
+	var buf bytes.Buffer
+	err := printCredentialsFile(&buf, creds)
+	if err == nil {
+		t.Fatal("expected error for newline in region value, got nil")
+	}
+	if !strings.Contains(err.Error(), "newline") {
+		t.Errorf("error should mention newline, got: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected no output on error, got %d bytes:\n%s", buf.Len(), buf.String())
+	}
+}
+
 // TestPrintCreds_PathTraversal verifies that paths escaping the current
 // directory via ".." are rejected before any file is created.
 func TestPrintCreds_PathTraversal(t *testing.T) {
