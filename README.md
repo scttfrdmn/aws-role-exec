@@ -80,6 +80,12 @@ sudo mv aws-role-exec /usr/local/bin/
 brew install scttfrdmn/tap/aws-role-exec
 ```
 
+### Scoop (Windows)
+```powershell
+scoop bucket add scttfrdmn https://github.com/scttfrdmn/scoop-bucket
+scoop install aws-role-exec
+```
+
 ---
 
 ## Quick start
@@ -154,6 +160,30 @@ aws-role-exec \
 | `--sts-timeout` | string | `30s` | Timeout for the STS AssumeRole API call (Go duration, e.g. `10s`, `1m`) |
 | `--dry-run` | bool | false | Print what would happen without calling STS |
 | `--version` | | | Print version and exit |
+
+---
+
+## Observability
+
+`aws-role-exec` has no built-in logging. AWS CloudTrail is the audit trail.
+
+Every `sts:AssumeRole` call is automatically logged to CloudTrail with:
+- The role ARN that was assumed
+- The caller identity (who or what called AssumeRole)
+- The **session name** — this is how you tie a CloudTrail entry back to a specific job, user, or pipeline run
+- Source IP and timestamp
+
+Every subsequent AWS API call made by the child process is also logged to CloudTrail under that session identity, so you can trace `s3:GetObject`, `bedrock:InvokeModel`, or any other call back to the originating job.
+
+**Use `--session-name` to make this useful.** The default includes username and a random hex suffix, but a value like `slurm-${SLURM_JOB_ID}` or `github-${GITHUB_RUN_ID}` lets you join CloudTrail logs with your own job accounting records.
+
+To query your CloudTrail logs for all API calls from a specific session:
+
+```bash
+aws cloudtrail lookup-events \
+  --lookup-attributes AttributeKey=Username,AttributeValue=slurm-12345678 \
+  --query 'Events[*].{Time:EventTime,Event:EventName,Resource:Resources[0].ResourceName}'
+```
 
 ---
 

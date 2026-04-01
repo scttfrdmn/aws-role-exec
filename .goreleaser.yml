@@ -53,6 +53,20 @@ brews:
     install: |
       bin.install "aws-role-exec"
 
+scoops:
+  - name: aws-role-exec
+    repository:
+      owner: scttfrdmn
+      name: scoop-bucket
+      token: "{{ .Env.SCOOP_BUCKET_GITHUB_TOKEN }}"
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    commit_msg_template: "scoop: update aws-role-exec to {{ .Tag }}"
+    homepage: "https://github.com/scttfrdmn/aws-role-exec"
+    description: "Assume an AWS IAM role and exec a command with the credentials — sudo for AWS roles"
+    license: "Apache-2.0"
+
 changelog:
   sort: asc
   filters:
