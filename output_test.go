@@ -25,12 +25,13 @@ func TestPrintEnv(t *testing.T) {
 	}
 	out := buf.String()
 
+	// Values are single-quoted for safe eval in POSIX shells.
 	checks := []string{
-		"export AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE",
-		"export AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
-		"export AWS_SESSION_TOKEN=AQoXnyc4lcK4w",
-		"export AWS_DEFAULT_REGION=us-east-1",
-		"export AWS_REGION=us-east-1",
+		"export AWS_ACCESS_KEY_ID='AKIAIOSFODNN7EXAMPLE'",
+		"export AWS_SECRET_ACCESS_KEY='wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'",
+		"export AWS_SESSION_TOKEN='AQoXnyc4lcK4w'",
+		"export AWS_DEFAULT_REGION='us-east-1'",
+		"export AWS_REGION='us-east-1'",
 		"# expires: 2026-03-21T15:00:00Z",
 	}
 	for _, want := range checks {
@@ -164,5 +165,130 @@ func TestPrintCreds_FileOutput_RefusesExisting(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "already exists") {
 		t.Errorf("expected 'already exists' in error, got: %v", err)
+	}
+}
+
+// TestShellQuote verifies the shellQuote helper covers all injection-relevant cases.
+func TestShellQuote(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"simple", "'simple'"},
+		{"with space", "'with space'"},
+		{"with$dollar", "'with$dollar'"},
+		{"with`backtick`", "'with`backtick`'"},
+		{"it's", `'it'\''s'`},
+		{"a'b'c", `'a'\''b'\''c'`},
+		{"", "''"},
+		{"/slashes/are/fine", "'/slashes/are/fine'"},
+		{"key=value", "'key=value'"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := shellQuote(tt.input)
+			if got != tt.want {
+				t.Errorf("shellQuote(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestPrintEnv_SpecialChars verifies that shell-special characters in credential
+// values are safely single-quoted and do not break eval.
+func TestPrintEnv_SpecialChars(t *testing.T) {
+	creds := &credentials{
+		AccessKeyID:     "AKIA$SPECIAL",
+		SecretAccessKey: "secret`with`backticks",
+		SessionToken:    "token/with/slashes+and=equals",
+		Region:          "us-east-1",
+		Expiration:      time.Date(2026, 3, 21, 15, 0, 0, 0, time.UTC),
+	}
+	var buf bytes.Buffer
+	if err := printEnv(&buf, creds); err != nil {
+		t.Fatalf("printEnv: %v", err)
+	}
+	out := buf.String()
+
+	checks := []string{
+		"export AWS_ACCESS_KEY_ID='AKIA$SPECIAL'",
+		"export AWS_SECRET_ACCESS_KEY='secret`with`backticks'",
+		"export AWS_SESSION_TOKEN='token/with/slashes+and=equals'",
+	}
+	for _, want := range checks {
+		if !strings.Contains(out, want) {
+			t.Errorf("printEnv output missing %q\ngot:\n%s", want, out)
+		}
+	}
+}
+
+// TestPrintEnv_SingleQuoteEscaping verifies that a single quote inside a
+// credential value is correctly escaped as '\” in the output.
+func TestPrintEnv_SingleQuoteEscaping(t *testing.T) {
+	creds := &credentials{
+		AccessKeyID:     "KEY",
+		SecretAccessKey: "it's-a-secret",
+		SessionToken:    "tok",
+		Region:          "us-east-1",
+		Expiration:      time.Date(2026, 3, 21, 15, 0, 0, 0, time.UTC),
+	}
+	var buf bytes.Buffer
+	if err := printEnv(&buf, creds); err != nil {
+		t.Fatalf("printEnv: %v", err)
+	}
+	out := buf.String()
+	// "it's-a-secret" → 'it'\''s-a-secret'
+	if !strings.Contains(out, `'it'\''s-a-secret'`) {
+		t.Errorf("single quote not escaped correctly, got:\n%s", out)
+	}
+}
+
+// TestPrintCredentialsFile_NewlineInjection verifies that a credential value
+// containing a newline is rejected, preventing INI key injection.
+func TestPrintCredentialsFile_NewlineInjection(t *testing.T) {
+	creds := &credentials{
+		AccessKeyID:     "AKIA\naws_secret_access_key = injected",
+		SecretAccessKey: "secret",
+		SessionToken:    "token",
+		Region:          "us-east-1",
+	}
+	var buf bytes.Buffer
+	err := printCredentialsFile(&buf, creds)
+	if err == nil {
+		t.Fatal("expected error for newline in credential value, got nil")
+	}
+	if !strings.Contains(err.Error(), "newline") {
+		t.Errorf("error should mention newline, got: %v", err)
+	}
+	// No partial output must be written before the error is detected.
+	if buf.Len() != 0 {
+		t.Errorf("expected no output on error, got %d bytes:\n%s", buf.Len(), buf.String())
+	}
+}
+
+// TestPrintCredentialsFile_CarriageReturnInjection verifies that \r is also rejected.
+func TestPrintCredentialsFile_CarriageReturnInjection(t *testing.T) {
+	creds := &credentials{
+		AccessKeyID:     "AKIA\rinjected",
+		SecretAccessKey: "secret",
+		SessionToken:    "token",
+		Region:          "us-east-1",
+	}
+	var buf bytes.Buffer
+	err := printCredentialsFile(&buf, creds)
+	if err == nil {
+		t.Fatal("expected error for carriage return in credential value, got nil")
+	}
+}
+
+// TestPrintCreds_PathTraversal verifies that paths escaping the current
+// directory via ".." are rejected before any file is created.
+func TestPrintCreds_PathTraversal(t *testing.T) {
+	err := printCreds(testCreds, "env", "../../etc/passwd")
+	if err == nil {
+		t.Fatal("expected error for traversal path, got nil")
+	}
+	if !strings.Contains(err.Error(), "escapes") {
+		t.Errorf("error should mention 'escapes', got: %v", err)
 	}
 }

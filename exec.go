@@ -17,6 +17,9 @@ func execWithCreds(creds *credentials, command []string) error {
 	if len(command) == 0 {
 		return fmt.Errorf("no command specified")
 	}
+	if command[0] == "" {
+		return fmt.Errorf("command name must not be empty")
+	}
 
 	env := credEnv(creds, os.Environ())
 

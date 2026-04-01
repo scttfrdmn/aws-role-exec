@@ -329,6 +329,63 @@ func TestRun_InvalidRegion(t *testing.T) {
 	}
 }
 
+// TestRegionRe directly exercises the compiled regionRe regexp to verify it
+// accepts all standard and partition-specific AWS region names and rejects
+// malformed or malicious values.
+func TestRegionRe(t *testing.T) {
+	valid := []string{
+		"us-east-1",
+		"us-west-2",
+		"eu-central-1",
+		"ap-southeast-2",
+		"me-south-1",
+		"af-south-1",
+		"us-iso-east-1",  // GovCloud ISO
+		"us-isob-east-1", // GovCloud ISO-B
+		"us-gov-west-1",  // GovCloud
+		"eu-central-2",
+	}
+	for _, r := range valid {
+		if !regionRe.MatchString(r) {
+			t.Errorf("regionRe should match valid region %q but did not", r)
+		}
+	}
+
+	invalid := []string{
+		"US-EAST-1",
+		"us_east_1",
+		"1us-east-1",
+		"us-east",
+		"",
+		"../../../../etc/passwd",
+		"us east 1",
+	}
+	for _, r := range invalid {
+		if regionRe.MatchString(r) {
+			t.Errorf("regionRe should not match invalid region %q but did", r)
+		}
+	}
+}
+
+// TestExecWithCreds_EmptyCommandElement verifies that passing an empty string
+// as the command name produces a clear error instead of an opaque "no such file"
+// from exec.LookPath("").
+func TestExecWithCreds_EmptyCommandElement(t *testing.T) {
+	creds := &credentials{
+		AccessKeyID:     "AKIA",
+		SecretAccessKey: "secret",
+		SessionToken:    "token",
+		Region:          "us-east-1",
+	}
+	err := execWithCreds(creds, []string{""})
+	if err == nil {
+		t.Fatal("expected error for empty command element, got nil")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Errorf("error should mention 'empty', got: %v", err)
+	}
+}
+
 func TestEnvKey(t *testing.T) {
 	tests := []struct {
 		kv   string

@@ -42,8 +42,12 @@ type runConfig struct {
 // (aws, aws-cn, aws-us-gov, aws-iso, aws-iso-b).
 var roleARNRe = regexp.MustCompile(`^arn:[a-z][a-z0-9-]*:iam::[0-9]{12}:role/[\w+=,.@/-]+$`)
 
-// regionRe matches valid AWS region names (e.g. us-east-1, eu-central-1, ap-southeast-2).
-var regionRe = regexp.MustCompile(`^[a-z]{2,}-[a-z]+-\d+$`)
+// regionRe matches valid AWS region identifiers. The pattern accepts standard
+// 3-segment regions (us-east-1), GovCloud ISO variants (us-iso-east-1,
+// us-isob-east-1), and any future partition-defined regions that follow the
+// same convention: one or more lowercase/digit/hyphen segments ending in a
+// numeric suffix.
+var regionRe = regexp.MustCompile(`^[a-z][a-z0-9-]+-\d+$`)
 
 // validateRoleARN returns an error if arn does not look like a valid IAM role ARN.
 func validateRoleARN(arn string) error {
@@ -130,6 +134,12 @@ func run(ctx context.Context, cfg runConfig) error {
 
 	if len(cfg.command) > 0 {
 		return execWithCreds(creds, cfg.command)
+	}
+
+	// credentials-file format writes an INI file that must be referenced by a
+	// file path; stdout is not a valid credentials file location for any SDK.
+	if cfg.format == "credentials-file" && cfg.output == "" {
+		return fmt.Errorf("--format credentials-file requires --output to specify the file path")
 	}
 
 	// Guard against a cancelled context before writing the output file.
