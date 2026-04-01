@@ -46,6 +46,21 @@ CloudTrail logs every API call, but if hundreds of jobs share one identity, the 
 
 ---
 
+## How it compares to similar tools
+
+| Tool | Approach | Credential storage | No-keychain friendly | Signal-transparent exec | HPC / headless |
+|------|----------|--------------------|----------------------|-------------------------|----------------|
+| **aws-role-exec** | exec / eval / file | none (caller already has creds) | yes | yes (`syscall.Exec`) | yes |
+| [aws-vault](https://github.com/99designs/aws-vault) | exec / eval | OS keychain (required) | no | no | no |
+| [granted](https://github.com/common-fate/granted) | exec / SSO browser | OS keychain | no | no | no |
+| [aws-runas](https://github.com/mmmorris1975/aws-runas) | exec / eval | `~/.aws` profiles | partial | no | partial |
+| [awsume](https://awsu.me) | eval only | `~/.aws` profiles | yes | no (shell stays) | partial |
+| `aws sts assume-role` | manual export | none | yes | no | yes |
+
+`aws-role-exec` is designed for environments where credentials are already present (instance profile, OIDC token, env vars) and you need to assume a child role without a keychain, browser, or persistent config. See [ALTERNATIVES.md](ALTERNATIVES.md) for a full comparison.
+
+---
+
 ## Install
 
 ### go install (latest)
