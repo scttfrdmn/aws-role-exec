@@ -542,7 +542,13 @@ deploy:
 # Dockerfile
 FROM python:3.12-slim
 RUN pip install boto3
-COPY --from=ghcr.io/scttfrdmn/aws-role-exec:latest /aws-role-exec /usr/local/bin/
+
+# Install aws-role-exec from GitHub Releases (auto-detects arch)
+RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && \
+    curl -fsSL \
+      "https://github.com/scttfrdmn/aws-role-exec/releases/latest/download/aws-role-exec_linux_${ARCH}.tar.gz" \
+    | tar -xz -C /usr/local/bin aws-role-exec
+
 COPY entrypoint.sh /entrypoint.sh
 ENTRYPOINT ["/entrypoint.sh"]
 ```
@@ -568,11 +574,26 @@ docker run \
 
 #### Kubernetes init container: write credentials file before main container
 
+Build a minimal init container image containing aws-role-exec:
+```dockerfile
+# Dockerfile.init
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
+    ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') && \
+    curl -fsSL \
+      "https://github.com/scttfrdmn/aws-role-exec/releases/latest/download/aws-role-exec_linux_${ARCH}.tar.gz" \
+    | tar -xz -C /usr/local/bin aws-role-exec && \
+    apt-get purge -y curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
+ENTRYPOINT ["/usr/local/bin/aws-role-exec"]
+```
+
+Then push it to your registry (e.g. `your-registry/aws-role-exec-init:latest`) and reference it in the pod spec:
+
 ```yaml
 # pod.yaml
 initContainers:
   - name: aws-creds
-    image: ghcr.io/scttfrdmn/aws-role-exec:latest
+    image: your-registry/aws-role-exec-init:latest
     command:
       - aws-role-exec
       - --role-arn
@@ -856,4 +877,4 @@ Issues and pull requests welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-Apache 2.0
+MIT
