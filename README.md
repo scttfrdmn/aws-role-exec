@@ -882,4 +882,4 @@ Issues and pull requests welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-MIT
+Apache 2.0

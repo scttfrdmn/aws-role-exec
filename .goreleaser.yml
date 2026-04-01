@@ -47,7 +47,7 @@ brews:
     directory: Formula
     homepage: "https://github.com/scttfrdmn/aws-role-exec"
     description: "Assume an AWS IAM role and exec a command with the credentials — sudo for AWS roles"
-    license: "MIT"
+    license: "Apache-2.0"
     test: |
       system "#{bin}/aws-role-exec", "--version"
     install: |
