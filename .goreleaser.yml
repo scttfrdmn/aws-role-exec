@@ -34,6 +34,25 @@ signs:
     output: true
 snapshot:
   version_template: "{{ .Tag }}-next"
+brews:
+  - name: aws-role-exec
+    repository:
+      owner: scttfrdmn
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    commit_author:
+      name: goreleaserbot
+      email: bot@goreleaser.com
+    commit_msg_template: "brew: update aws-role-exec to {{ .Tag }}"
+    directory: Formula
+    homepage: "https://github.com/scttfrdmn/aws-role-exec"
+    description: "Assume an AWS IAM role and exec a command with the credentials — sudo for AWS roles"
+    license: "MIT"
+    test: |
+      system "#{bin}/aws-role-exec", "--version"
+    install: |
+      bin.install "aws-role-exec"
+
 changelog:
   sort: asc
   filters:

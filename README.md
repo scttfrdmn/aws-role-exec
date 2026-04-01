@@ -35,9 +35,8 @@ tar -xzf aws-role-exec.tar.gz
 sudo mv aws-role-exec /usr/local/bin/
 ```
 
-### Homebrew (future)
+### Homebrew
 ```bash
-# Coming in v1.0
 brew install scttfrdmn/tap/aws-role-exec
 ```
 
