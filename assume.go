@@ -34,6 +34,7 @@ type runConfig struct {
 	format      string
 	output      string
 	policy      string
+	stsTimeout  string
 	dryRun      bool
 	command     []string
 }
@@ -108,6 +109,15 @@ func run(ctx context.Context, cfg runConfig) error {
 		return fmt.Errorf("--region: invalid AWS region %q (expected format: us-east-1)", region)
 	}
 
+	stsTimeoutStr := cfg.stsTimeout
+	if stsTimeoutStr == "" {
+		stsTimeoutStr = "30s"
+	}
+	stsTimeoutDur, err := time.ParseDuration(stsTimeoutStr)
+	if err != nil {
+		return fmt.Errorf("--sts-timeout: invalid duration %q: %w", cfg.stsTimeout, err)
+	}
+
 	if cfg.dryRun {
 		fmt.Fprintf(os.Stderr, "dry-run: would assume role %s\n", cfg.roleArn)
 		fmt.Fprintf(os.Stderr, "  session-name : %s\n", sessionName)
@@ -121,9 +131,9 @@ func run(ctx context.Context, cfg runConfig) error {
 		return nil
 	}
 
-	// Bound the STS round-trip to 30 s so a hung or unreachable endpoint
-	// does not block the caller indefinitely (e.g. in an HPC job prologue).
-	stsCtx, stsCancel := context.WithTimeout(ctx, 30*time.Second)
+	// Bound the STS round-trip so a hung or unreachable endpoint does not
+	// block the caller indefinitely (e.g. in an HPC job prologue).
+	stsCtx, stsCancel := context.WithTimeout(ctx, stsTimeoutDur)
 	defer stsCancel()
 
 	creds, err := assumeRole(stsCtx, region, cfg.roleArn, sessionName, secs, cfg.policy)
@@ -174,6 +184,9 @@ func assumeRole(ctx context.Context, region, roleArn, sessionName string, durati
 		if !json.Valid([]byte(policy)) {
 			return nil, fmt.Errorf("--policy: invalid JSON")
 		}
+		if err := validatePolicyStructure(policy); err != nil {
+			return nil, err
+		}
 		input.Policy = aws.String(policy)
 	}
 
@@ -189,6 +202,29 @@ func assumeRole(ctx context.Context, region, roleArn, sessionName string, durati
 		SessionToken:    aws.ToString(out.Credentials.SessionToken),
 		Expiration:      aws.ToTime(out.Credentials.Expiration),
 	}, nil
+}
+
+// validatePolicyStructure checks that policy is a minimal valid IAM policy document.
+// It verifies that "Statement" is present and is a JSON array, and that each statement
+// object contains an "Effect" key. This catches obviously malformed policies locally
+// (e.g. {"foo":"bar"}) and produces a clearer error than the cryptic STS API response.
+func validatePolicyStructure(policy string) error {
+	var doc struct {
+		Statement []json.RawMessage `json:"Statement"`
+	}
+	if err := json.Unmarshal([]byte(policy), &doc); err != nil || doc.Statement == nil {
+		return fmt.Errorf("--policy: must contain a \"Statement\" array (e.g. {\"Statement\":[...]})")
+	}
+	for i, raw := range doc.Statement {
+		var stmt map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &stmt); err != nil {
+			return fmt.Errorf("--policy: Statement[%d] is not a JSON object", i)
+		}
+		if _, ok := stmt["Effect"]; !ok {
+			return fmt.Errorf("--policy: Statement[%d] is missing required \"Effect\" field", i)
+		}
+	}
+	return nil
 }
 
 // parseDuration accepts Go durations ("1h30m") or HH:MM:SS (for HPC walltime compatibility).
@@ -235,13 +271,22 @@ func defaultSessionName() string {
 	if u, err := user.Current(); err == nil && u.Username != "" {
 		// Keep only [a-zA-Z0-9] — a strict subset of the STS-allowed set
 		// [a-zA-Z0-9=,.@-] — to avoid ambiguous characters in CloudTrail.
+		// Replace other runes with '-', then collapse consecutive hyphens and
+		// trim so a username like "!@#$%" doesn't produce "-----" garbage.
 		safe := strings.Map(func(r rune) rune {
 			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
 				return r
 			}
 			return '-'
 		}, u.Username)
-		name = "aws-role-exec-" + safe
+		// Collapse runs of hyphens introduced by the map above.
+		for strings.Contains(safe, "--") {
+			safe = strings.ReplaceAll(safe, "--", "-")
+		}
+		safe = strings.Trim(safe, "-")
+		if safe != "" {
+			name = "aws-role-exec-" + safe
+		}
 	}
 	// Use a crypto-random suffix instead of the process ID so session names
 	// are not predictable from username + PID, preventing an attacker from

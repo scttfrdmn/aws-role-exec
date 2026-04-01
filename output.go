@@ -71,9 +71,11 @@ func printCreds(creds *credentials, format, outputPath string) (retErr error) {
 		}
 		// Surface close errors (e.g. flush failures on NFS) only when no
 		// earlier write error occurred, to avoid masking a more specific error.
+		// On close failure, remove the file so O_EXCL does not block retries.
 		defer func() {
 			if cerr := f.Close(); cerr != nil && retErr == nil {
 				retErr = fmt.Errorf("close output file: %w", cerr)
+				os.Remove(clean) //nolint:errcheck // best-effort cleanup; original close error takes priority
 			}
 		}()
 		w = f

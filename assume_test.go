@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -383,6 +385,148 @@ func TestExecWithCreds_EmptyCommandElement(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "empty") {
 		t.Errorf("error should mention 'empty', got: %v", err)
+	}
+}
+
+// TestExecWithCreds_CommandNotFound verifies that passing a command name that
+// does not exist in PATH produces a clear "command not found" error instead of
+// a generic exec.LookPath message.
+func TestExecWithCreds_CommandNotFound(t *testing.T) {
+	creds := &credentials{
+		AccessKeyID:     "AKIA",
+		SecretAccessKey: "secret",
+		SessionToken:    "token",
+		Region:          "us-east-1",
+	}
+	err := execWithCreds(creds, []string{"definitely-not-a-real-binary-xyz-abc"})
+	if err == nil {
+		t.Fatal("expected error for command not in PATH, got nil")
+	}
+	if !strings.Contains(err.Error(), "command not found") {
+		t.Errorf("error should mention 'command not found', got: %v", err)
+	}
+}
+
+// TestRun_DryRun_WithCommand verifies the dry-run output path when a command
+// is provided (prints "command:" instead of "format:").
+func TestRun_DryRun_WithCommand(t *testing.T) {
+	cfg := runConfig{
+		roleArn:  "arn:aws:iam::123456789012:role/test-role",
+		duration: "1h",
+		dryRun:   true,
+		command:  []string{"aws", "s3", "ls"},
+	}
+	if err := run(context.Background(), cfg); err != nil {
+		t.Fatalf("run with dry-run + command: %v", err)
+	}
+}
+
+// TestRun_RegionPrecedence verifies that AWS_DEFAULT_REGION takes priority
+// over AWS_REGION when both environment variables are set.
+func TestRun_RegionPrecedence(t *testing.T) {
+	t.Setenv("AWS_DEFAULT_REGION", "eu-west-1")
+	t.Setenv("AWS_REGION", "us-west-2")
+
+	// dry-run so no STS call is made; the region resolved is printed to stderr.
+	cfg := runConfig{
+		roleArn:  "arn:aws:iam::123456789012:role/test-role",
+		duration: "1h",
+		dryRun:   true,
+	}
+	// We just need to confirm no error — if regionRe rejects the resolved
+	// region, run() would return an error. The correct region (eu-west-1) is
+	// valid; us-west-2 is also valid, so the test is really about which one
+	// is chosen. We verify that by redirecting stderr and checking its content.
+	old := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+	err := run(context.Background(), cfg)
+	w.Close()
+	os.Stderr = old
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	if err != nil {
+		t.Fatalf("dry-run with region env vars: %v", err)
+	}
+	if !strings.Contains(buf.String(), "eu-west-1") {
+		t.Errorf("expected AWS_DEFAULT_REGION (eu-west-1) to win, got dry-run output:\n%s", buf.String())
+	}
+	if strings.Contains(buf.String(), "us-west-2") {
+		t.Errorf("AWS_REGION (us-west-2) should not appear when AWS_DEFAULT_REGION is set:\n%s", buf.String())
+	}
+}
+
+// TestValidatePolicyStructure exercises the policy structure validator.
+func TestValidatePolicyStructure(t *testing.T) {
+	tests := []struct {
+		name    string
+		policy  string
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "valid minimal policy",
+			policy:  `{"Statement":[{"Effect":"Allow","Action":"s3:GetObject","Resource":"*"}]}`,
+			wantErr: false,
+		},
+		{
+			name:    "valid policy with Version",
+			policy:  `{"Version":"2012-10-17","Statement":[{"Effect":"Deny","Action":"*","Resource":"*"}]}`,
+			wantErr: false,
+		},
+		{
+			name:    "missing Statement",
+			policy:  `{"foo":"bar"}`,
+			wantErr: true,
+			errMsg:  "Statement",
+		},
+		{
+			name:    "Statement not an array",
+			policy:  `{"Statement":"Allow"}`,
+			wantErr: true,
+			errMsg:  "Statement",
+		},
+		{
+			name:    "statement missing Effect",
+			policy:  `{"Statement":[{"Action":"s3:GetObject","Resource":"*"}]}`,
+			wantErr: true,
+			errMsg:  "Effect",
+		},
+		{
+			name:    "empty Statement array is valid",
+			policy:  `{"Statement":[]}`,
+			wantErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validatePolicyStructure(tt.policy)
+			if tt.wantErr && err == nil {
+				t.Errorf("expected error, got nil")
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+			if tt.wantErr && tt.errMsg != "" && err != nil && !strings.Contains(err.Error(), tt.errMsg) {
+				t.Errorf("error should contain %q, got: %v", tt.errMsg, err)
+			}
+		})
+	}
+}
+
+// TestAssumeRole_PolicyMissingStatement verifies that a syntactically valid
+// JSON policy that lacks a Statement array is rejected locally.
+func TestAssumeRole_PolicyMissingStatement(t *testing.T) {
+	_, err := assumeRole(context.Background(), "us-east-1",
+		"arn:aws:iam::123456789012:role/test-role",
+		"test-session", 3600,
+		`{"foo":"bar"}`,
+	)
+	if err == nil {
+		t.Fatal("expected error for policy missing Statement, got nil")
+	}
+	if !strings.Contains(err.Error(), "Statement") {
+		t.Errorf("error should mention Statement, got: %v", err)
 	}
 }
 

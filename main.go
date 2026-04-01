@@ -25,6 +25,7 @@ func newRootCmd() *cobra.Command {
 		format      string
 		output      string
 		policy      string
+		stsTimeout  string
 		dryRun      bool
 	)
 
@@ -47,6 +48,7 @@ func newRootCmd() *cobra.Command {
 				format:      format,
 				output:      output,
 				policy:      policy,
+				stsTimeout:  stsTimeout,
 				dryRun:      dryRun,
 				command:     args,
 			})
@@ -59,8 +61,9 @@ func newRootCmd() *cobra.Command {
 	f.StringVar(&sessionName, "session-name", "", "STS session name (default: aws-role-exec-<user>-<pid>)")
 	f.StringVar(&region, "region", "", "AWS region (default: AWS_DEFAULT_REGION or us-east-1)")
 	f.StringVar(&format, "format", "env", "Output format when no command given: env | json | credentials-file")
-	f.StringVar(&output, "output", "", "Output file path for credentials-file format (default: stdout)")
+	f.StringVar(&output, "output", "", "Write credentials to this file instead of stdout (all formats)")
 	f.StringVar(&policy, "policy", "", "Inline JSON session policy to scope credentials further")
+	f.StringVar(&stsTimeout, "sts-timeout", "30s", "Timeout for the STS AssumeRole API call (Go duration, e.g. 10s, 1m)")
 	f.BoolVar(&dryRun, "dry-run", false, "Print what would happen without calling STS")
 
 	_ = cmd.MarkFlagRequired("role-arn")
