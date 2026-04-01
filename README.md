@@ -6,6 +6,46 @@ Assume an AWS IAM role and exec a command with the credentials — `sudo` for AW
 
 ---
 
+## Why
+
+### 1. Credentials that outlive their job
+
+When you set `AWS_ACCESS_KEY_ID` in a shell and forget to unset it, those credentials persist indefinitely in that shell session — and in any child process that inherits the environment. A job that ran four hours ago is still carrying credentials that are theoretically valid for months.
+
+`aws-role-exec` uses STS temporary credentials with a hard expiry. The credentials stop working at the end of the session duration, regardless of whether anyone cleaned up.
+
+### 2. The same credentials for everything
+
+A cluster node typically has one instance profile or one set of `AWS_*` environment variables. Every job that runs on that node — simulation, ML training, data download, billing query — uses the same identity with the same permissions.
+
+With `aws-role-exec`, each job assumes a purpose-built role. The genomics pipeline gets read access to the genomics S3 bucket. The ML training job gets read access to training data and write access to the model output bucket. Neither can touch the other's data, even if they run on the same node.
+
+### 3. Credentials in container images
+
+Baking credentials into a Docker image is a common accident. The image gets pushed to a registry, the credentials are in the layer history, and now anyone who can pull the image has your credentials.
+
+With `aws-role-exec` as the `ENTRYPOINT`, the image contains no credentials at all. They are injected at runtime from an external trust relationship.
+
+### 4. Multi-tenant security
+
+On a shared cluster or CI system, if credentials leak into the environment through a misconfigured prolog or a world-readable file, any user on that node can exfiltrate them. Credentials scoped to a single job, with a session name tied to the job ID, limit the blast radius: leaked credentials expire when the job ends, and CloudTrail shows exactly which job they belonged to.
+
+### 5. CI/CD credential sprawl
+
+A CI pipeline with a single AWS secret shared across build, test, integration, and deploy stages is operating at the union of all those permissions all the time. If the secret leaks, an attacker can do anything any stage can do.
+
+With `aws-role-exec`, each stage assumes the minimum role it needs, for exactly as long as it needs it.
+
+### 6. Tools that don't respect AWS credential chains
+
+Most tools support `AWS_*` environment variables, but some only read `~/.aws/credentials`. The credentials-file output mode produces a file in the format those tools expect, written to a path you control, cleaned up when you're done.
+
+### 7. Auditing: knowing *which job* made *which API call*
+
+CloudTrail logs every API call, but if hundreds of jobs share one identity, the logs are useless for attribution. When every job sets `--session-name "slurm-${SLURM_JOB_ID}"`, CloudTrail entries carry the job ID. You can join CloudTrail logs with your cluster accounting logs to see exactly which job read which S3 object.
+
+---
+
 ## Install
 
 ### go install (latest)
@@ -821,54 +861,6 @@ export AWS_SESSION_TOKEN=$(echo "$CREDS_JSON"     | jq -r .SessionToken)
 # Now invoke the adapter binary with scoped credentials
 ood-aws-batch-adapter submit <<< "${JOB_SPEC_JSON}"
 ```
-
----
-
-## Problems this solves (that you might not have known you had)
-
-### 1. Credentials that outlive their job
-
-When you set `AWS_ACCESS_KEY_ID` in a shell and forget to unset it, those credentials persist indefinitely in that shell session — and in any child process that inherits the environment. A job that ran four hours ago is still carrying credentials that are theoretically valid for months.
-
-`aws-role-exec` uses STS temporary credentials with a hard expiry. The credentials stop working at the end of the session duration, regardless of whether anyone cleaned up.
-
-### 2. The same credentials for everything
-
-A cluster node typically has one instance profile or one set of `AWS_*` environment variables. Every job that runs on that node — simulation, ML training, data download, billing query — uses the same identity with the same permissions.
-
-With `aws-role-exec`, each job assumes a purpose-built role. The genomics pipeline gets read access to the genomics S3 bucket. The ML training job gets read access to training data and write access to the model output bucket. Neither can touch the other's data, even if they run on the same node.
-
-### 3. Credentials in container images
-
-Baking credentials into a Docker image is a common accident. The image gets pushed to a registry, the credentials are in the layer history, and now anyone who can pull the image has your credentials.
-
-With `aws-role-exec` as the `ENTRYPOINT`, the image contains no credentials at all. They are injected at runtime from an external trust relationship.
-
-### 4. Multi-tenant HPC security
-
-On a shared cluster, if node-level credentials leak into the job environment through a misconfigured prolog or a world-readable file, any user on that node can exfiltrate them. Credentials that are scoped to a single job, with a session name tied to the job ID, limit the blast radius: leaked credentials expire when the job ends, and CloudTrail shows exactly which job they belonged to.
-
-### 5. CI/CD credential sprawl
-
-A CI pipeline that has a single AWS secret shared across dozens of jobs — build, test, integration, deploy, rollback — is operating at the union of all those permissions all the time. If the secret leaks, an attacker can do anything any job can do.
-
-With `aws-role-exec`, each pipeline stage assumes the minimum role it needs, for exactly as long as it needs it. The base CI role only needs `sts:AssumeRole` on the specific child roles.
-
-### 6. Tools that don't respect AWS credential chains
-
-Most tools support `AWS_*` environment variables, but some have their own credential handling that only reads `~/.aws/credentials`. The credentials-file output mode produces a file in the format those tools expect, written to a path you control, cleaned up when you're done.
-
-### 7. Ephemeral compute that needs AWS access
-
-Spot instances, GitHub Actions runners, Fargate tasks — these environments come and go and shouldn't carry long-lived credentials. With `aws-role-exec`, the instance or runner uses an instance profile or OIDC token to assume a job-specific role, and the child process credentials are short-lived by construction.
-
-### 8. Auditing: knowing *which job* made *which API call*
-
-CloudTrail logs every API call, but if hundreds of jobs share one identity, the logs are useless for attribution. When every job sets `--session-name "slurm-${SLURM_JOB_ID}"`, CloudTrail entries carry the job ID. You can join CloudTrail logs with your cluster accounting logs to see exactly which job read which S3 object or invoked which Bedrock model.
-
-### 9. Signal-transparent credential injection
-
-A common pattern is to write a wrapper shell script that sets credentials and then calls the real program. The shell process sits between the job scheduler and the program — SIGTERM for walltime limits goes to the shell, which may or may not propagate it correctly. With `exec aws-role-exec`, the shell is replaced by the target program. Signals arrive directly. Exit codes propagate. The scheduler sees the right PID.
 
 ---
 
