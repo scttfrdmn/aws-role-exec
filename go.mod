@@ -7,7 +7,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.12
 	github.com/aws/aws-sdk-go-v2/service/iam v1.53.6
 	github.com/aws/aws-sdk-go-v2/service/sts v1.41.9
-	github.com/scttfrdmn/substrate v0.44.3
+	github.com/scttfrdmn/substrate v0.58.0
 	github.com/spf13/cobra v1.10.2
 )
 
